@@ -367,34 +367,40 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
     return (v === null || v === undefined) ? '' : v.toString().trim().replace(/\s+/g, '');
   }
 
-  function parseDateFlexible(str) {
-    if (!str) return null;
-    if (str instanceof Date) return isNaN(str.getTime()) ? null : str;
-    const s = str.toString().trim();
-    let d = new Date(s);
-    if (!isNaN(d.getTime())) return d;
-    const m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+  // Extracts {y, m, d, dayKnown} directly from the raw value, with no Date object
+  // involved — avoids UTC/local timezone shifts that silently move the day or month.
+  function extractDateParts(raw) {
+    if (raw === null || raw === undefined || raw === '') return null;
+    if (raw instanceof Date) {
+      if (isNaN(raw.getTime())) return null;
+      // SheetJS builds date cells at UTC midnight; read the UTC fields, not local ones.
+      return { y: raw.getUTCFullYear(), m: raw.getUTCMonth() + 1, d: raw.getUTCDate(), dayKnown: true };
+    }
+    const s = raw.toString().trim();
+    let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (m) return { y: +m[1], m: +m[2], d: +m[3], dayKnown: true };
+    m = s.match(/^(\d{4})-(\d{1,2})$/);
+    if (m) return { y: +m[1], m: +m[2], d: 1, dayKnown: false };
+    m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
     if (m) {
       let [, dd, mm, yy] = m;
       if (yy.length === 2) yy = '20' + yy;
-      d = new Date(`${yy}-${mm.padStart(2,'0')}-${dd.padStart(2,'0')}`);
-      if (!isNaN(d.getTime())) return d;
+      return { y: +yy, m: +mm, d: +dd, dayKnown: true };
     }
     return null;
   }
 
-  function formatDate(d) {
-    if (!d) return '—';
-    return d.toLocaleDateString('es-MX', { year: 'numeric', month: '2-digit', day: '2-digit' });
+  function dateKey(parts) {
+    if (!parts) return null;
+    return parts.y * 10000 + parts.m * 100 + parts.d;
   }
 
-  function formatCaducidad(raw, parsed) {
-    if (!parsed) return raw ? escapeHtml(raw.toString()) : '—';
-    const isYearMonthOnly = typeof raw === 'string' && /^\d{4}-\d{1,2}$/.test(raw.trim());
-    if (isYearMonthOnly) {
-      return parsed.toLocaleDateString('es-MX', { year: 'numeric', month: '2-digit' });
-    }
-    return formatDate(parsed);
+  function formatCaducidad(parts, raw) {
+    if (!parts) return raw ? escapeHtml(raw.toString()) : '—';
+    const mm = String(parts.m).padStart(2, '0');
+    if (!parts.dayKnown) return `${mm}/${parts.y}`;
+    const dd = String(parts.d).padStart(2, '0');
+    return `${dd}/${mm}/${parts.y}`;
   }
 
   function parseStock(v) {
@@ -485,22 +491,23 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
 
     const rows = matches.map(r => {
       const rawDate = fieldMap.caducidad ? r[fieldMap.caducidad] : '';
-      const parsed = parseDateFlexible(rawDate);
+      const dateParts = extractDateParts(rawDate);
       const stock = fieldMap.stock ? parseStock(r[fieldMap.stock]) : null;
       return {
         ml: fieldMap.ml ? (r[fieldMap.ml] || '—') : '—',
         ubicacion: fieldMap.ubicacion ? (r[fieldMap.ubicacion] || '—') : '—',
         lote: fieldMap.lote ? (r[fieldMap.lote] || '—') : '—',
-        caducidadRaw: rawDate || '—',
-        caducidadDate: parsed,
+        caducidadRaw: rawDate,
+        caducidadParts: dateParts,
         stock
       };
     });
 
     rows.sort((a, b) => {
-      if (a.caducidadDate && b.caducidadDate) return a.caducidadDate - b.caducidadDate;
-      if (a.caducidadDate) return -1;
-      if (b.caducidadDate) return 1;
+      const ka = dateKey(a.caducidadParts), kb = dateKey(b.caducidadParts);
+      if (ka !== null && kb !== null) return ka - kb;
+      if (ka !== null) return -1;
+      if (kb !== null) return 1;
       return 0;
     });
 
@@ -511,7 +518,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
       : `${matches.length} coincidencia${matches.length > 1 ? 's' : ''}`;
 
     const tableRows = rows.map((r, i) => {
-      const dateCell = formatCaducidad(r.caducidadRaw, r.caducidadDate);
+      const dateCell = formatCaducidad(r.caducidadParts, r.caducidadRaw);
       const fefoTag = (i === 0 && rows.length > 1) ? '<br><span class="tag tag-warn">Vence primero</span>' : '';
       const stockCell = r.stock !== null ? r.stock : '—';
       const stockTag = (r.stock !== null && r.stock <= 0) ? '<br><span class="tag tag-error">Sin stock</span>' : '';
